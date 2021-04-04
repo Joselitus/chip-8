@@ -7,16 +7,23 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <omp.h>
+#include <math.h>
+#include <limits.h>
 
 #include <SDL2/SDL.h>
+
+#define AMPLITUDE 28000
+#define FREQUENCY 44100
+#define PI 3.141592653589793
 
 #define display_size 256
 #define display_height 32
 #define display_length 8
 
-#define freq 500
+#define frequ 500
 #define timer_freq 60
 
 #define mem_size 4096
@@ -72,14 +79,29 @@ unsigned char sprites[80] =   { 0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 								0xF0, 0x80, 0xF0, 0x80, 0x80  // F
 								};
 
+void generateSamples(long * v, Sint16 *stream, int length) {
+	for (int i = 0; i < length; i++) {
+		stream[i] = 0.5* AMPLITUDE * (4/PI) * (sin(*v * 2 * PI / FREQUENCY) + 0.33333*sin(*v * 6 * PI / FREQUENCY) + 0.2*sin(*v * 10 * PI / FREQUENCY));
+		*v = (*v+392)%LONG_MAX;
+	}
+}
+
+void audio_callback(void *userdata, Uint8 *_stream, int _length)
+{
+    Sint16 *stream = (Sint16*) _stream;
+    int length = _length / 2;
+    long * v = (long*)userdata;
+
+    generateSamples(v, stream, length);
+}
+
+
 void set_pixel(SDL_Surface * surface, int x, int y, uint32_t state) {
 	int lx = display_length*8*pixel_size;
 	uint32_t * screen = (uint32_t*)surface->pixels; 
 	#pragma omp parallel for
 	for (int i = 0; i < pixel_size; i++) {
-		//printf("la otra i = %d\n", i);
 		for (int j = 0; j < pixel_size; j++) {
-			//if (i == 9) printf("la otra j = %d\n", j);
 			screen[(pixel_size*y+i)*lx + pixel_size*x+j] = state;
 		}
 	};
@@ -94,12 +116,10 @@ void show() {
 			unsigned char byte = display[i*display_length+j];
 			for (int k = 0; k < 8; k++) {
 				set_pixel(surface, j*8+k, i, byte&0x80 ? 0xFF00FF00 : 0);
-				//printf(byte&0x01 ? "■ " : "  ");
 				byte = byte << 1;
 
 			}
 		}
-		//printf("\n");
 	}
 	SDL_UnlockSurface(surface);
 	SDL_UpdateWindowSurface(window);
@@ -107,8 +127,11 @@ void show() {
 
 }
 
-int update_keyboard(int key, int state) {
-	if (30 <= key && key <= 33) return keyboard_state[key-30] = state;
+uint8_t update_keyboard(int key, int state) {
+	if (30 <= key && key <= 33) { 
+		keyboard_state[key-30] = state;
+		return (uint8_t) key-30;
+	}
 	unsigned char mch_key = -1;
 	switch (key)
 	{
@@ -160,22 +183,27 @@ int update_keyboard(int key, int state) {
 			mch_key = 0xF;
 			break;
 	}
-	if (mch_key >= 0) return keyboard_state[mch_key] = state;
+	if (mch_key >= 0) {
+		keyboard_state[mch_key] = state;
+		return (uint8_t) mch_key;
+	}
 	return 0;
 }
 
 unsigned char get_key() {
 
-	for (int i = 0; i < num_keys; ++i)
-		if (keyboard_state[i]) return i;
+
 	SDL_Event e;
-	int c;
+	int c = 0;
 	do {
 		while (SDL_PollEvent(&e)) {
-			if (e.type == SDL_KEYDOWN)
-				c = update_keyboard(e.key.keysym.scancode, 1);
+			if (e.type == SDL_QUIT) exit(EXIT_FAILURE);
+			if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
+				c = update_keyboard(e.key.keysym.scancode, (e.type == SDL_KEYDOWN));
 		}
 	} while( !c );
+
+	return c;
 
 }
 
@@ -185,7 +213,7 @@ void CLS() {
 }
 
 void RET() {
-	pc = stack[sp--]-2;
+	pc = stack[sp--];
 }
 
 void JP(uint16_t addr) {
@@ -193,7 +221,7 @@ void JP(uint16_t addr) {
 }
 
 void CALL(uint16_t addr) {
-	stack[++sp] = pc+2;
+	stack[++sp] = pc;
 	pc = addr-2;
 }
 
@@ -277,10 +305,13 @@ void RND(unsigned char v, unsigned char k) {
 }
 
 void DRW(unsigned char v, unsigned char w, unsigned char n) {
-	unsigned char x = general_registers[v];
-	unsigned char y = general_registers[w];
+	unsigned char x = general_registers[v]%(display_length*8);
+	unsigned char y = general_registers[w]%display_height;
+	general_registers[15] = 0;
 	uint8_t used_bits = x%8;
 	for (int i = 0; i < n; i++) {
+		if (((mem[I+i] >> used_bits) & display[(y+i)*8+x/8]) || ((mem[I+i] << 8-used_bits) & display[(y+i)*8+x/8+1]) )
+            general_registers[15] = 1;
 		display[(y+i)*8+x/8] = mem[I+i] >> used_bits ^ display[(y+i)*8+x/8];
 		display[(y+i)*8+x/8+1] = mem[I+i] << 8-used_bits ^ display[(y+i)*8+x/8+1];
 	}
@@ -288,13 +319,11 @@ void DRW(unsigned char v, unsigned char w, unsigned char n) {
 }
 
 void SKP(unsigned char v) {
-	printf("quiere la %x\n", v);
-	pc += (keyboard_state[v])*2;
+	pc += (keyboard_state[general_registers[v]])*2;
 }
 
 void SKNP(unsigned char v) {
-	printf("no quiere la %x\n", v);
-	pc += (!keyboard_state[v])*2;
+	pc += (!keyboard_state[general_registers[v]])*2;
 }
 
 void LDT(unsigned char v) {
@@ -310,6 +339,8 @@ void ILDT(unsigned char v) {
 }
 
 void LDS(unsigned char v) {
+	if (!sound && general_registers[v])
+		SDL_PauseAudio(0);
 	sound = general_registers[v];
 }
 
@@ -506,7 +537,6 @@ void load_program(const char * file_name) {
 	sp = 0;
 	int file;
 	if ((file = open(file_name, O_RDONLY)) < 0) {
-		printf("'%s', %s\n", file_name, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	size_t size = lseek(file, 0, SEEK_END);
@@ -514,19 +544,18 @@ void load_program(const char * file_name) {
 	unsigned char * buff = malloc(size);
 	read(file, buff, size);
 	program_end = (size+0x200)-1;
-	printf("Program size: %ld\n", size);
 	memcpy(mem+program_start, buff, size);
 }
 // TODO Pauses, modify emulation speed on runtime
 void emulate(const char * file_name) {
-	struct timespec start, end, ts;
+	struct timeval start, end, ts;
+	unsigned long temp_counter;
 	load_program(file_name);
 	SDL_Event e;
 	int quit = 0;
-	//keyboard_state[2] = 1;
-	//keyboard_state[0] = 1;
+
 	while( !quit ) {
-		clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+		gettimeofday(&start, NULL);
 
 		while( SDL_PollEvent( &e ) > 0 ) {
 			if( e.type == SDL_QUIT ) quit = 1;
@@ -534,45 +563,41 @@ void emulate(const char * file_name) {
 			if ( e.type == SDL_KEYDOWN ) update_keyboard(e.key.keysym.scancode, 1);
 			if ( e.type == SDL_KEYUP ) update_keyboard(e.key.keysym.scancode, 0);
 		}
-		// printf("pc = %x\n", pc);
-		// printf("instruction = %x%x%x%x\n", to_instruction(mem+pc).code, to_instruction(mem+pc).v, to_instruction(mem+pc).w, to_instruction(mem+pc).tail);
-		// printf("I = %x\n", I);
-		//for (int i = 0;  i < general_registers_size; i++)
-		//	printf("V%d = %x, ", i, general_registers[i]);
-		//printf("\n");
-		//getchar();
-		 for (int i = 0; i < num_keys; ++i)
-		 {
-		 	if (keyboard_state[i]) printf("Se esta pulsando: %x\n", i);
-		 	//printf("tecla: %d: %d, ", i, keyboard_state[i]);
-		 }
-		//printf("\n");
+
 		execute(to_instruction(mem+pc));
 		pc += 2;
 		quit = quit || (pc < 0x200 || pc > program_end);
-		clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-		uint64_t delta_us = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000;
-		uint64_t remaining = 1000000/freq - delta_us;
-		if (delta_us < 2000) {
-			ts.tv_sec = remaining/1000000;
-			ts.tv_nsec = (remaining%1000000) * 1000;
-			nanosleep(&ts, &ts);
+		gettimeofday(&end, NULL);
+		unsigned long delta_ns = (end.tv_sec - start.tv_sec) * 1000000 + end.tv_usec - start.tv_usec;
+		if (delta_ns < (unsigned long)1000000/frequ) {
+			temp_counter += 1000000/frequ;
+			unsigned long remaining = (unsigned long)1000000/frequ - delta_ns;
+			usleep(remaining);
+		} else 
+			temp_counter += delta_ns;
+		if (temp_counter > 1000000/timer_freq) {
+			temp_counter = temp_counter%(1000000/timer_freq);
+			if (timer) timer--;
+			if (sound) {
+				sound--;
+				if ( !sound )
+					SDL_PauseAudio(1);
+			}
 		}
-
-		if (timer) timer--;
-		if (sound) sound--;
 	}
 }
 
 int main (int argc, unsigned char * argv[]) {
 	time_t t;
 	srand((unsigned) time(&t));
+
 	if (argc < 2) {
 		printf("The rom to be emulated has to be given as a parameter\n");
 		exit(EXIT_FAILURE);
 	}
 	for (int i = 0; i < 80; i++) mem[64+i] = sprites[i];
 	
+	// Initialize sdl video
 	if( SDL_Init( SDL_INIT_VIDEO ) < 0){
          fprintf( stderr, "Could not initialise SDL: %s\n", SDL_GetError() );
          exit( -1 );
@@ -580,9 +605,25 @@ int main (int argc, unsigned char * argv[]) {
     window =  SDL_CreateWindow(
     	"bingle", 0, 0, display_length*8*pixel_size, display_height*pixel_size, 0);
 
+    // Initialize sdl audio
+    SDL_Init(SDL_INIT_AUDIO);
+	SDL_AudioSpec desiredSpec;
+
+	long wavetime = 0;
+
+    desiredSpec.freq = FREQUENCY;
+    desiredSpec.format = AUDIO_S16SYS;
+    desiredSpec.channels = 1;
+    desiredSpec.samples = 2048;
+    desiredSpec.callback = audio_callback;
+    desiredSpec.userdata = &wavetime;
+
+    SDL_AudioSpec obtainedSpec;
+
+    // you might want to look for errors here
+    SDL_OpenAudio(&desiredSpec, &obtainedSpec);
+
     emulate(argv[1]);
     exit(EXIT_SUCCESS);
-	//memset(display, 1, display_size);
-	//memcpy(display, sprites, 5);
 }
 
