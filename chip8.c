@@ -79,13 +79,16 @@ unsigned char sprites[80] =   { 0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 								0xF0, 0x80, 0xF0, 0x80, 0x80  // F
 								};
 
+// Audio sample generation
 void generateSamples(long * v, Sint16 *stream, int length) {
+	// Using fourier square wave (somehow fitting for old computers)
 	for (int i = 0; i < length; i++) {
 		stream[i] = 0.5* AMPLITUDE * (4/PI) * (sin(*v * 2 * PI / FREQUENCY) + 0.33333*sin(*v * 6 * PI / FREQUENCY) + 0.2*sin(*v * 10 * PI / FREQUENCY));
 		*v = (*v+392)%LONG_MAX;
 	}
 }
 
+// Giving samples for the audio stream
 void audio_callback(void *userdata, Uint8 *_stream, int _length)
 {
     Sint16 *stream = (Sint16*) _stream;
@@ -95,7 +98,7 @@ void audio_callback(void *userdata, Uint8 *_stream, int _length)
     generateSamples(v, stream, length);
 }
 
-
+// Set SDL surface pixel
 void set_pixel(SDL_Surface * surface, int x, int y, uint32_t state) {
 	int lx = display_length*8*pixel_size;
 	uint32_t * screen = (uint32_t*)surface->pixels; 
@@ -107,6 +110,7 @@ void set_pixel(SDL_Surface * surface, int x, int y, uint32_t state) {
 	};
 }
 
+// Update all pixels
 void show() {
 	SDL_Surface * surface = SDL_GetWindowSurface(window);
 	SDL_LockSurface(surface);
@@ -127,6 +131,7 @@ void show() {
 
 }
 
+// Translate form SDL keykodes to chip-8 keykodes
 uint8_t update_keyboard(int key, int state) {
 	if (30 <= key && key <= 33) { 
 		keyboard_state[key-30] = state;
@@ -190,6 +195,7 @@ uint8_t update_keyboard(int key, int state) {
 	return 0;
 }
 
+// Block until the state of the keyboard changes
 unsigned char get_key() {
 
 
@@ -207,6 +213,7 @@ unsigned char get_key() {
 
 }
 
+// Instruction implementation:
 
 void CLS() {
 	memset(display, 0, display_size);
@@ -368,6 +375,7 @@ void LDXI(unsigned char v) {
 		general_registers[i] = mem[I+i];
 }
 
+// Parse instruction
 struct instruction to_instruction(unsigned char * a) {
 	struct instruction inst;
 	inst.code = a[0] >> 4;
@@ -378,14 +386,17 @@ struct instruction to_instruction(unsigned char * a) {
 	return inst;
 }
 
+// Parse instruction with three bytes as data
 uint16_t get_n(struct instruction inst) {
 	return inst.tail | inst.w << 4 | inst.v << 8;
 }
 
+// Parse instruction with two bytes as data
 unsigned char get_k(struct instruction inst) {
 	return inst.tail | inst.w << 4;
 }
 
+// Execute the apropiate routine for an instruction
 void execute(struct instruction inst) {
 	switch (inst.code)
 	{
@@ -531,6 +542,7 @@ void execute(struct instruction inst) {
 	}
 }
 
+// Loads a chip-8 program from a filename
 void load_program(const char * file_name) {
 	program_end = 0;
 	pc = program_start;
@@ -546,7 +558,8 @@ void load_program(const char * file_name) {
 	program_end = (size+0x200)-1;
 	memcpy(mem+program_start, buff, size);
 }
-// TODO Pauses, modify emulation speed on runtime
+
+// main loop
 void emulate(const char * file_name) {
 	struct timeval start, end, ts;
 	unsigned long temp_counter;
