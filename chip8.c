@@ -1,16 +1,7 @@
-#include <stdlib.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <errno.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/time.h>
 #include <fcntl.h>
-#include <omp.h>
-#include <math.h>
 #include <limits.h>
 
 #include <SDL2/SDL.h>
@@ -23,7 +14,7 @@
 #define display_height 32
 #define display_length 8
 
-#define frequ 500
+#define frequ 1200
 #define timer_freq 60
 
 #define mem_size 4096
@@ -100,6 +91,8 @@ void audio_callback(void *userdata, Uint8 *_stream, int _length)
 
 // Set SDL surface pixel
 void set_pixel(SDL_Surface * surface, int x, int y, uint32_t state) {
+	y %= 32;
+	x %= 64;
 	int lx = display_length*8*pixel_size;
 	uint32_t * screen = (uint32_t*)surface->pixels; 
 	#pragma omp parallel for
@@ -131,7 +124,7 @@ void show() {
 
 }
 
-// Translate form SDL keykodes to chip-8 keykodes
+// Translate form SDL keycodes to chip-8 keycodes
 uint8_t update_keyboard(int key, int state) {
 	if (30 <= key && key <= 33) { 
 		keyboard_state[key-30] = state;
@@ -317,10 +310,10 @@ void DRW(unsigned char v, unsigned char w, unsigned char n) {
 	general_registers[15] = 0;
 	uint8_t used_bits = x%8;
 	for (int i = 0; i < n; i++) {
-		if (((mem[I+i] >> used_bits) & display[(y+i)*8+x/8]) || ((mem[I+i] << 8-used_bits) & display[(y+i)*8+x/8+1]) )
+		if (((mem[I+i] >> used_bits) & display[((y+i)*8+x/8)%256]) || ((mem[I+i] << 8-used_bits) & display[((y+i)*8+x/8+1)%256]) )
             general_registers[15] = 1;
-		display[(y+i)*8+x/8] = mem[I+i] >> used_bits ^ display[(y+i)*8+x/8];
-		display[(y+i)*8+x/8+1] = mem[I+i] << 8-used_bits ^ display[(y+i)*8+x/8+1];
+		display[((y+i)*8+x/8)%256] = mem[I+i] >> used_bits ^ display[((y+i)*8+x/8)%256];
+		display[((y+i)*8+(x/8)%display_length+1)%256] = mem[I+i] << 8-used_bits ^ display[((y+i)*8+(x/8)%display_length+1)%256];
 	}
 	show();
 }
@@ -588,8 +581,8 @@ void emulate(const char * file_name) {
 			usleep(remaining);
 		} else 
 			temp_counter += delta_ns;
-		if (temp_counter > 1000000/timer_freq) {
-			temp_counter = temp_counter%(1000000/timer_freq);
+		while (temp_counter > 1000000/timer_freq) {
+			temp_counter -= (1000000/timer_freq);
 			if (timer) timer--;
 			if (sound) {
 				sound--;
