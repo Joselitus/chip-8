@@ -52,6 +52,13 @@ struct instruction {
 	unsigned char tail: 4;
 };
 
+struct audioData {
+	long wavetime;
+	int isactive;
+};
+
+struct audioData audio_data;
+
 unsigned char sprites[80] =   { 0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 								0x20, 0x60, 0x20, 0x20, 0x70, // 1
 								0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
@@ -71,12 +78,18 @@ unsigned char sprites[80] =   { 0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 								};
 
 // Audio sample generation
-void generateSamples(long * v, Sint16 *stream, int length) {
+void generateSamples(struct audioData * audio_data, Sint16 *stream, int length) {
 	// Using fourier square wave (somehow fitting for old computers)
+	long v = audio_data->wavetime;
+	int active = audio_data->isactive;
 	for (int i = 0; i < length; i++) {
-		stream[i] = 0.5* AMPLITUDE * (4/PI) * (sin(*v * 2 * PI / FREQUENCY) + 0.33333*sin(*v * 6 * PI / FREQUENCY) + 0.2*sin(*v * 10 * PI / FREQUENCY));
-		*v = (*v+392)%LONG_MAX;
+		if (active)
+			stream[i] = 0.5* AMPLITUDE * (4/PI) * (sin(v * 2 * PI / FREQUENCY) + 0.33333*sin(v * 6 * PI / FREQUENCY) + 0.2*sin(v * 10 * PI / FREQUENCY));
+		else
+			stream[i] = 0;
+		v = (v+392)%LONG_MAX;
 	}
+	audio_data->wavetime = v;
 }
 
 // Giving samples for the audio stream
@@ -84,9 +97,9 @@ void audio_callback(void *userdata, Uint8 *_stream, int _length)
 {
     Sint16 *stream = (Sint16*) _stream;
     int length = _length / 2;
-    long * v = (long*)userdata;
+    struct audioData * audio_data = (struct audioData*)userdata;
 
-    generateSamples(v, stream, length);
+    generateSamples(audio_data, stream, length);
 }
 
 // Set SDL surface pixel
@@ -340,7 +353,7 @@ void ILDT(unsigned char v) {
 
 void LDS(unsigned char v) {
 	if (!sound && general_registers[v])
-		SDL_PauseAudio(0);
+		audio_data.isactive = 1;
 	sound = general_registers[v];
 }
 
@@ -587,7 +600,7 @@ void emulate(const char * file_name) {
 			if (sound) {
 				sound--;
 				if ( !sound )
-					SDL_PauseAudio(1);
+					audio_data.isactive = 0;
 			}
 		}
 	}
@@ -615,19 +628,21 @@ int main (int argc, unsigned char * argv[]) {
     SDL_Init(SDL_INIT_AUDIO);
 	SDL_AudioSpec desiredSpec;
 
-	long wavetime = 0;
+	audio_data.wavetime = 0;
+	audio_data.isactive = 0;
 
     desiredSpec.freq = FREQUENCY;
     desiredSpec.format = AUDIO_S16SYS;
     desiredSpec.channels = 1;
     desiredSpec.samples = 2048;
     desiredSpec.callback = audio_callback;
-    desiredSpec.userdata = &wavetime;
+    desiredSpec.userdata = &audio_data;
 
     SDL_AudioSpec obtainedSpec;
 
-    // you might want to look for errors here
     SDL_OpenAudio(&desiredSpec, &obtainedSpec);
+
+    SDL_PauseAudio(0);
 
     emulate(argv[1]);
     exit(EXIT_SUCCESS);
